@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
-$root = Split-Path $PSScriptRoot -Parent
+$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop
 . (Join-Path $PSScriptRoot 'Common.ps1')
 Get-Command bicep -ErrorAction Stop | Out-Null
@@ -18,9 +18,11 @@ try {
         [void][Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors)
         if ($parseErrors.Count) { throw "PowerShell parse errors in $($file.FullName): $parseErrors" }
     }
-    & python -B -m unittest discover -s (Join-Path $root 'tests') -p 'test_*.py' -v
-    if ($LASTEXITCODE -ne 0) { throw 'Python readiness/load regression tests failed.' }
-    $container = New-PesterContainer -Path (Join-Path $root 'tests\*.Tests.ps1') -Data @{ BuildDirectory = $work }
+    foreach ($suite in @('shared', 'bash')) {
+        & python -B -m unittest discover -s (Join-Path $root "tests\$suite") -p 'test_*.py' -v
+        if ($LASTEXITCODE -ne 0) { throw "Python regression tests failed: $suite" }
+    }
+    $container = New-PesterContainer -Path (Join-Path $root 'tests\psw\*.Tests.ps1') -Data @{ BuildDirectory = $work }
     $result = Invoke-Pester -Container $container -PassThru -Output Detailed
     if ($result.FailedCount -gt 0 -or $result.PassedCount -eq 0) { throw 'Local regression checks failed.' }
 } finally {

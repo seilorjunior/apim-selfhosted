@@ -1,6 +1,6 @@
 BeforeAll {
-    $root = Split-Path $PSScriptRoot -Parent
-    . (Join-Path $root 'scripts\Rollout.ps1')
+    $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    . (Join-Path $root 'scripts\psw\Rollout.ps1')
 }
 
 Describe 'Stable revision selection' {
@@ -199,18 +199,18 @@ Describe 'Manual rollback safeguards' {
     }
     AfterEach { Remove-Variable ShgwRollbackTest -Scope Global -ErrorAction SilentlyContinue }
     It 'previews rollback without changing traffic or activating revisions' {
-        & (Join-Path $root 'scripts\Rollback-Gateway.ps1') @rollbackArguments -WhatIf
+        & (Join-Path $root 'scripts\psw\Rollback-Gateway.ps1') @rollbackArguments -WhatIf
         @($global:ShgwRollbackTest.commands | Where-Object {$_ -match 'activate|traffic set|tag update'}).Count | Should -Be 0
         Should -Invoke Wait-GatewayRevision -Times 0 -Exactly
     }
     It 'rejects revisions owned by a different gateway' {
-        { & (Join-Path $root 'scripts\Rollback-Gateway.ps1') @rollbackArguments -RevisionName 'other--previous' -Confirm:$false } | Should -Throw '*belong to this gateway*'
+        { & (Join-Path $root 'scripts\psw\Rollback-Gateway.ps1') @rollbackArguments -RevisionName 'other--previous' -Confirm:$false } | Should -Throw '*belong to this gateway*'
     }
     It 'rejects a revision which does not exist' {
-        { & (Join-Path $root 'scripts\Rollback-Gateway.ps1') @rollbackArguments -RevisionName 'ca-apim-gateway--missing' -Confirm:$false } | Should -Throw '*does not exist*'
+        { & (Join-Path $root 'scripts\psw\Rollback-Gateway.ps1') @rollbackArguments -RevisionName 'ca-apim-gateway--missing' -Confirm:$false } | Should -Throw '*does not exist*'
     }
     It 'activates, verifies and promotes the recorded prior release' {
-        & (Join-Path $root 'scripts\Rollback-Gateway.ps1') @rollbackArguments -Confirm:$false
+        & (Join-Path $root 'scripts\psw\Rollback-Gateway.ps1') @rollbackArguments -Confirm:$false
         $global:ShgwRollbackTest.traffic | Should -Be 'ca-apim-gateway--previous'
         @($global:ShgwRollbackTest.commands | Where-Object {$_ -match '/activate\?'}).Count | Should -Be 1
         Should -Invoke Wait-GatewayConfiguration -Times 1 -Exactly

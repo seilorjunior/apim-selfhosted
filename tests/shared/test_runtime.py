@@ -11,7 +11,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def load_module(name, path):
@@ -22,7 +22,27 @@ def load_module(name, path):
 
 
 readiness = load_module("readiness", "gateway/readiness.py")
-load = load_module("load_test", "scripts/load_test.py")
+load = load_module("load_test", "scripts/shared/load_test.py")
+
+
+class ScriptLayoutTests(unittest.TestCase):
+    def test_tests_live_only_in_their_designated_folders(self):
+        tests = ROOT / "tests"
+        self.assertEqual([path.name for path in tests.iterdir() if path.is_file()], [])
+        self.assertTrue((tests / "bash" / "test_bash.py").is_file())
+        self.assertTrue((tests / "shared" / "test_runtime.py").is_file())
+        for path in tests.rglob("*.Tests.ps1"):
+            self.assertEqual(path.parent, tests / "psw")
+
+    def test_scripts_live_only_in_their_designated_folders(self):
+        scripts = ROOT / "scripts"
+        self.assertEqual([path.name for path in scripts.iterdir() if path.is_file()], [])
+        self.assertFalse((ROOT / "deploy.ps1").exists())
+        self.assertTrue((scripts / "shared" / "load_test.py").is_file())
+        for path in scripts.rglob("*.ps1"):
+            self.assertEqual(path.parent, scripts / "psw")
+        for path in scripts.rglob("*.sh"):
+            self.assertEqual(path.parent, scripts / "bash")
 
 
 class GatewayResponse(io.BytesIO):

@@ -1,7 +1,7 @@
 # Azure API Management self-hosted gateway on Container Apps
 
 Deploy an Azure API Management (APIM) self-hosted gateway to **Azure Container Apps**
-using Bicep and PowerShell. The gateway exposes a sample API over HTTPS and routes
+using Bicep with PowerShell or native Bash. The gateway exposes a sample API over HTTPS and routes
 requests to a backend that is reachable only inside the Container Apps environment.
 
 The project includes repeatable deployment, existing-APIM support, dev/prod
@@ -19,6 +19,7 @@ with traffic restoration, token rotation, and GitHub Actions with OIDC.
 
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
+- [PowerShell and native Bash commands](#powershell-and-native-bash-commands)
 - [Deployment options](#deployment-options)
 - [Configuration](#configuration)
 - [Testing and verified results](#testing-and-verified-results)
@@ -130,7 +131,8 @@ cd apim-selfhosted
 
 ### 1. Check prerequisites
 
-Run the commands from the project root in **PowerShell 7.2 or later**.
+The quick-start examples below use **PowerShell 7.2 or later** from the project
+root. Linux/macOS users can follow the [native Bash commands](#powershell-and-native-bash-commands).
 
 | Tool or permission | Requirement |
 |---|---|
@@ -218,8 +220,8 @@ $deployment = @{
     Environment    = 'dev'
 }
 
-.\scripts\Test-Local.ps1
-.\deploy.ps1 @deployment -ValidateOnly
+.\scripts\psw\Test-Local.ps1
+.\scripts\psw\deploy.ps1 @deployment -ValidateOnly
 ```
 
 Validation builds both Bicep entry points, checks provider registrations, runs
@@ -237,7 +239,7 @@ runtime startup.
 30-60 minutes or longer.
 
 ```powershell
-.\deploy.ps1 @deployment
+.\scripts\psw\deploy.ps1 @deployment
 ```
 
 The script validates and previews changes again, then proceeds without an
@@ -270,6 +272,168 @@ curl.exe -i "$gatewayUrl/sample/"
 Expect HTML from the backend, HTTP 200, and `X-Served-By: aca-gateway`.
 The header is a diagnostic routing check, not an authentication mechanism.
 
+## PowerShell and native Bash commands
+
+Scripts are organized by shell:
+
+| Operation | PowerShell 7.2+ | Native Bash |
+|---|---|---|
+| Deploy, validate, rotate | [scripts/psw/deploy.ps1](scripts/psw/deploy.ps1) | [scripts/bash/deploy.sh](scripts/bash/deploy.sh) |
+| Local tests | [scripts/psw/Test-Local.ps1](scripts/psw/Test-Local.ps1) | [scripts/bash/test-local.sh](scripts/bash/test-local.sh) |
+| Live checks | [scripts/psw/Test-Gateway.ps1](scripts/psw/Test-Gateway.ps1) | [scripts/bash/test-gateway.sh](scripts/bash/test-gateway.sh) |
+| Bounded load | [scripts/psw/Test-Load.ps1](scripts/psw/Test-Load.ps1) | [scripts/bash/test-load.sh](scripts/bash/test-load.sh) |
+| Manual rollback | [scripts/psw/Rollback-Gateway.ps1](scripts/psw/Rollback-Gateway.ps1) | [scripts/bash/rollback-gateway.sh](scripts/bash/rollback-gateway.sh) |
+| Restart rehearsal | [scripts/psw/Test-Restart.ps1](scripts/psw/Test-Restart.ps1) | [scripts/bash/test-restart.sh](scripts/bash/test-restart.sh) |
+
+### Folder organization and updated paths
+
+PowerShell scripts live only in `scripts/psw/`, Bash scripts in `scripts/bash/`,
+and the shared Python load engine in `scripts/shared/`. There are no entry-point
+wrappers at the repository root or directly under `scripts/`. Both shells use the
+same Bicep, parameter profiles and Python load engine. Bash has native
+orchestration and does not call `pwsh`.
+Tests follow the same organization: `tests/psw/` contains Pester suites,
+`tests/bash/` contains the Python-based native Bash behavior harness, and
+`tests/shared/` contains shared Python runtime and folder-layout tests.
+Helper files (`Common.ps1`/`common.sh` and `Rollout.ps1`/`rollout.sh`) are sourced
+by their entry points rather than executed independently.
+
+Update local commands, editor tasks and external automation that used the old
+paths. Those paths have been removed; they no longer forward to the new scripts.
+
+| Former path | Current path |
+|---|---|
+| `deploy.ps1` | [scripts/psw/deploy.ps1](scripts/psw/deploy.ps1) |
+| `scripts/*.ps1` | [scripts/psw/](scripts/psw/) |
+| `scripts/load_test.py` | [scripts/shared/load_test.py](scripts/shared/load_test.py) |
+| `tests/*.Tests.ps1` | [tests/psw/](tests/psw/) |
+| `tests/test_bash.py` | [tests/bash/test_bash.py](tests/bash/test_bash.py) |
+| `tests/test_runtime.py` | [tests/shared/test_runtime.py](tests/shared/test_runtime.py) |
+
+Test runners discover suites in these subfolders. Running Python discovery only
+against the top-level `tests` directory is not the supported entry point; use
+the runners below or select a suite explicitly. The folder-layout regression
+tests prevent loose scripts and test files from returning to the parent folders.
+Generated load reports remain under ignored `TestResults/`.
+
+### Bash prerequisites and deployment
+
+Use Bash 3.2+ on Linux/macOS (or a Linux distribution in WSL), Azure CLI 2.76+,
+standalone `bicep`, Python 3.12+ as `python3`, `curl`, and `jq`. Install them with
+your platform's package manager or official installers. Pester and PowerShell are
+not required for the native Bash commands. The hosted runtime image remains
+unchanged.
+
+```bash
+az version
+bicep --version
+python3 --version
+jq --version
+curl --version
+az login
+
+subscription_id='YOUR-SUBSCRIPTION-ID'
+resource_group='rg-apim-selfhosted'
+location='eastus2'
+publisher_email='you@contoso.com'
+
+# Run local checks before any Azure deployment.
+bash scripts/bash/test-local.sh
+
+# Read-only validation requires an existing resource group.
+# Create a dedicated demo group first if needed:
+az group create --name "$resource_group" --location "$location" \
+  --subscription "$subscription_id"
+
+bash scripts/bash/deploy.sh \
+  --subscription-id "$subscription_id" --resource-group "$resource_group" \
+  --location "$location" --publisher-email "$publisher_email" --validate-only
+
+# After reviewing validation/what-if, deploy with the candidate load gate.
+bash scripts/bash/deploy.sh \
+  --subscription-id "$subscription_id" --resource-group "$resource_group" \
+  --location "$location" --publisher-email "$publisher_email" --run-load-test
+```
+
+Provider registration and Azure permissions are the same as for PowerShell;
+Bash refuses unregistered providers rather than registering them silently.
+Use `--environment prod` with a production resource group for the prod profile.
+Use `--existing-apim-name` and optionally `--apim-resource-group` to reuse APIM,
+or `--parameters-file` for a custom JSON profile. Run an entry point with
+`--help` for all its options. Unknown options, missing values and invalid bounds
+fail explicitly.
+
+```bash
+# Rotate using settings from the successful shgw-infra deployment.
+bash scripts/bash/deploy.sh \
+  --subscription-id "$subscription_id" --resource-group "$resource_group" \
+  --rotate-token-only
+```
+
+Deployment uses owner-restricted temporary files, prefixes `GatewayKey ` exactly
+once, and removes generated credentials on exit. Do not run deployment with shell
+tracing or Azure CLI debug logging. The candidate stays at 0% traffic until its
+configuration, backend and optional load checks pass. Failure restores and
+verifies previous traffic, with the same first-deployment and shared-configuration
+limitations described in [safe rollout](#safe-rollout-and-rollback).
+
+### Bash testing
+
+```bash
+fqdn=$(az containerapp show --name ca-apim-gateway \
+  --resource-group "$resource_group" --subscription "$subscription_id" \
+  --query properties.configuration.ingress.fqdn --output tsv) || exit 1
+test -n "$fqdn" || exit 1
+gateway_url="https://$fqdn"
+
+# Checks both exact configuration readiness and a nonempty sample API response.
+bash scripts/bash/test-gateway.sh --gateway-url "$gateway_url" \
+  --expected-gateway-id aca-gateway --timeout-seconds 60
+
+# Inspect the HTTP status: both negative-route responses should be 404.
+curl -i "$gateway_url/not-found"
+curl -i -X POST "$gateway_url/sample/"
+
+# Short run, followed by the full bounded test if appropriate.
+bash scripts/bash/test-load.sh --gateway-url "$gateway_url" --duration-seconds 10
+bash scripts/bash/test-load.sh --gateway-url "$gateway_url" \
+  --requests-per-second 10 --duration-seconds 60 --max-concurrency 10
+
+# Use the exact report path printed by the command.
+jq '{passed, startedRequests, failedRequests, droppedRequests, droppedByReason,
+     errorRate, p95Ms, p99Ms}' TestResults/load-REPLACE-WITH-PRINTED-FILENAME.json
+```
+
+For prod, add `--expected-gateway-id aca-gateway-prod` and use
+`ca-apim-gateway-prod` for address discovery and operational commands. Bash uses
+the same load limits, default thresholds, report format and nonzero failure
+status as PowerShell. See [load report troubleshooting](#read-a-load-report-and-investigate-failures).
+
+The Bash local runner builds both templates, checks shell syntax, runs the shared
+Python runtime tests and native Bash behavior tests with mocked Azure, Bicep and
+HTTP commands. It does not execute the Pester suite or make Azure changes.
+Windows PowerShell tests explicitly skip POSIX Bash tests; CI runs those on
+Ubuntu. Native Bash orchestration is tested on Linux; macOS uses the same portable
+commands but has not been exercised here.
+
+### Bash rollback and restart safety
+
+```bash
+# Read-only previews do not activate, restart or change traffic.
+bash scripts/bash/rollback-gateway.sh \
+  --subscription-id "$subscription_id" --resource-group "$resource_group" --what-if
+
+bash scripts/bash/test-restart.sh \
+  --subscription-id "$subscription_id" --resource-group "$resource_group" \
+  --gateway-url "$gateway_url" --what-if
+```
+
+Remove `--what-if` to execute with interactive confirmation. Both commands require
+typing `yes`; automation must explicitly pass `--yes`. Restart can interrupt all
+replicas of the serving revision. Rollback resolves the recorded previous release
+unless `--revision-name` is provided, checks it before switching traffic, and
+restores the formerly serving release if rollback fails.
+
 ## Deployment options
 
 ### Dev and production profiles
@@ -287,7 +451,7 @@ The header is a diagnostic routing check, not an authentication mechanism.
 | Zone redundancy | Disabled | Disabled |
 
 ```powershell
-.\deploy.ps1 -SubscriptionId $subscriptionId `
+.\scripts\psw\deploy.ps1 -SubscriptionId $subscriptionId `
     -PublisherEmail $publisherEmail -Environment prod -Location $location
 ```
 
@@ -301,7 +465,7 @@ availability-zone redundancy or a tested high-availability design.
 ### Reuse an existing APIM service
 
 ```powershell
-.\deploy.ps1 -SubscriptionId $subscriptionId `
+.\scripts\psw\deploy.ps1 -SubscriptionId $subscriptionId `
     -ResourceGroup $resourceGroup -Location $location `
     -ExistingApimName 'my-existing-apim' `
     -ApimResourceGroup 'rg-existing-apim'
@@ -333,7 +497,7 @@ Copy-Item .\infra\parameters\dev.parameters.json `
     .\infra\parameters\dev.local.parameters.json
 
 # Edit the copied ARM parameter file, then:
-.\deploy.ps1 @deployment `
+.\scripts\psw\deploy.ps1 @deployment `
     -ParametersFile .\infra\parameters\dev.local.parameters.json
 ```
 
@@ -378,7 +542,8 @@ not automatically create an APIM API version set. The diagnostic header uses
 
 ### Choose a test scope
 
-Run commands from the repository root in PowerShell 7.2+. Use the
+The examples in this section use PowerShell 7.2+ from the repository root. For
+Linux/macOS equivalents, see [native Bash commands](#powershell-and-native-bash-commands). Use the
 [prerequisites](#1-check-prerequisites) for Python, Pester, and Bicep.
 
 | Scope | Requirements | Effect |
@@ -394,13 +559,13 @@ and outage rehearsals are separate operations and are not part of this sequence.
 ### Local regression tests
 
 ```powershell
-.\scripts\Test-Local.ps1
+.\scripts\psw\Test-Local.ps1
 ```
 
 Builds both templates, parses PowerShell scripts, and runs the
-[Pester deployment suite](tests/Project.Tests.ps1),
-[rollout/rollback suite](tests/Rollout.Tests.ps1), and
-[Python runtime tests](tests/test_runtime.py). They cover configuration guards, internal
+[Pester deployment suite](tests/psw/Project.Tests.ps1),
+[rollout/rollback suite](tests/psw/Rollout.Tests.ps1), and
+[Python runtime tests](tests/shared/test_runtime.py). They cover configuration guards, internal
 ingress, probes/scaling, secure token parameters, raw/prefixed token handling,
 fresh revisions, cleanup of temporary files, smoke retries, and mocked deployment
 and restart flows, false-positive readiness, load thresholds/pacing/concurrency,
@@ -409,8 +574,56 @@ Azure dependencies are mocked; no Azure sign-in or resource
 changes are needed, although the CLI tools must be installed.
 
 Success prints Python `OK` and a Pester summary with zero failures. The current
-suite contains 13 Python tests and 52 Pester tests. Any build, parse, or test
+suite contains 15 shared Python tests and 52 Pester tests, plus 24 native Bash
+behavior tests on POSIX hosts. Any build, parse, or test
 failure stops the script with an error.
+
+#### Run a specific suite
+
+Use the full local runner for Bicep compilation, script parsing and Pester tests:
+
+```powershell
+.\scripts\psw\Test-Local.ps1
+```
+
+The Pester infrastructure tests require the compiled-template directory supplied
+by that runner. Do not invoke them directly without that setup.
+
+For a faster check of shared Python behavior only:
+
+```powershell
+python -B -m unittest discover -s .\tests\shared -p 'test_*.py' -v
+```
+
+On Linux/macOS, run shared behavior or the isolated Bash harness separately:
+
+```bash
+python3 -B -m unittest discover -s tests/shared -p 'test_*.py' -v
+python3 -B -m unittest discover -s tests/bash -p 'test_*.py' -v
+
+# Includes real Bicep builds, Bash syntax checks and both Python suites.
+bash scripts/bash/test-local.sh
+```
+
+The Bash harness uses Python's standard library to execute native Bash commands
+against temporary Azure CLI, Bicep and HTTP doubles. It requires a POSIX host,
+Bash and jq, and skips explicitly on Windows. It tests deployment validation,
+token handling, promotion order, failed-candidate restoration, rollback,
+confirmation prompts and load caps without calling Azure.
+
+#### Validation after folder reorganization
+
+| Validation | Result |
+|---|---|
+| Windows PowerShell runner | 52 Pester and 15 shared Python tests passed; 24 POSIX Bash tests skipped as expected |
+| Linux Bash runner in WSL | 24 Bash behavior and 15 shared Python tests passed |
+| Templates and script checks | Both Bicep templates built; PowerShell parsing and Bash syntax checks passed |
+| Azure changes | None; folder reorganization did not deploy, restart or move traffic |
+
+The current layout has **91 distinct regression tests** across all suites.
+Shared Python tests run on both platforms; do not count those twice.
+Linux validation covers the Bash orchestration with mocks, not a live Azure
+deployment using Bash.
 
 ### Live smoke and negative-route checks
 
@@ -435,11 +648,11 @@ set `$appName = 'ca-apim-gateway-prod'` and
 Verify loaded configuration and backend routing:
 
 ```powershell
-. .\scripts\Common.ps1
+. .\scripts\psw\Common.ps1
 Wait-GatewayConfiguration -GatewayUrl $gatewayUrl `
     -ExpectedGatewayId $expectedGatewayId -TimeoutSeconds 60
 
-.\scripts\Test-Gateway.ps1 -GatewayUrl $gatewayUrl `
+.\scripts\psw\Test-Gateway.ps1 -GatewayUrl $gatewayUrl `
     -ExpectedGatewayId $expectedGatewayId -TimeoutSeconds 60
 
 $sample = Invoke-WebRequest -Uri "$gatewayUrl/sample/" -TimeoutSec 15
@@ -490,12 +703,12 @@ Run against an environment you own and have permission to test:
 
 ```powershell
 # Short preliminary run: at most 100 scheduled requests.
-.\scripts\Test-Load.ps1 -GatewayUrl $gatewayUrl `
+.\scripts\psw\Test-Load.ps1 -GatewayUrl $gatewayUrl `
     -ExpectedGatewayId $expectedGatewayId `
     -RequestsPerSecond 10 -DurationSeconds 10 -MaxConcurrency 10
 
 # Full bounded run: at most 600 scheduled requests.
-.\scripts\Test-Load.ps1 -GatewayUrl $gatewayUrl `
+.\scripts\psw\Test-Load.ps1 -GatewayUrl $gatewayUrl `
     -ExpectedGatewayId $expectedGatewayId `
     -RequestsPerSecond 10 -DurationSeconds 60 -MaxConcurrency 10
 ```
@@ -620,7 +833,7 @@ traffic-switch rehearsal.
 Rotate before expiry; the default token lifetime is 29 days.
 
 ```powershell
-.\deploy.ps1 -SubscriptionId $subscriptionId `
+.\scripts\psw\deploy.ps1 -SubscriptionId $subscriptionId `
     -ResourceGroup $resourceGroup -Environment dev -RotateTokenOnly
 ```
 
@@ -668,17 +881,17 @@ gets 100% traffic and has no rollback target; checks still must pass.
 To include the candidate load gate in deployment:
 
 ```powershell
-.\deploy.ps1 -SubscriptionId $subscriptionId -ResourceGroup $resourceGroup `
+.\scripts\psw\deploy.ps1 -SubscriptionId $subscriptionId -ResourceGroup $resourceGroup `
     -PublisherEmail $publisherEmail -Environment dev -RunLoadTest
 ```
 
 To preview or perform a later manual rollback:
 
 ```powershell
-.\scripts\Rollback-Gateway.ps1 -SubscriptionId $subscriptionId `
+.\scripts\psw\Rollback-Gateway.ps1 -SubscriptionId $subscriptionId `
     -ResourceGroup $resourceGroup -WhatIf
 
-.\scripts\Rollback-Gateway.ps1 -SubscriptionId $subscriptionId `
+.\scripts\psw\Rollback-Gateway.ps1 -SubscriptionId $subscriptionId `
     -ResourceGroup $resourceGroup
 ```
 
@@ -705,8 +918,9 @@ of zero downtime.
 | [Deployment](.github/workflows/deploy.yml) | Manual dispatch | `validate`, `deploy`, or `rotate`; defaults to validation |
 | Same deployment workflow | Opt-in schedule | Weekly token rotation; never provisions initial infrastructure |
 
-Both workflows use Windows runners and PowerShell. No repository, Azure identity,
-or GitHub environment is provisioned by these files.
+CI validates PowerShell on Windows and native Bash on Ubuntu. The deployment
+workflow uses Windows and PowerShell. No repository, Azure identity, or GitHub
+environment is provisioned by these files.
 
 1. Push the project to a GitHub repository.
 2. Create GitHub environments `dev` and `prod`. Configure required reviewers and
@@ -793,7 +1007,7 @@ they are checked explicitly before manual rollback.
 Run only when a temporary interruption is acceptable:
 
 ```powershell
-.\scripts\Test-Restart.ps1 -SubscriptionId $subscriptionId `
+.\scripts\psw\Test-Restart.ps1 -SubscriptionId $subscriptionId `
     -ResourceGroup $resourceGroup -GatewayUrl $gatewayUrl
 ```
 
@@ -861,7 +1075,14 @@ that APIM service; clean up only those project-owned entities separately if need
 
 | Path | Responsibility |
 |---|---|
-| [deploy.ps1](deploy.ps1) | Preflight, deployment, token handling, revision rollout, smoke verification |
+| [scripts/psw/deploy.ps1](scripts/psw/deploy.ps1) | PowerShell deployment entry point |
+| [scripts/psw/](scripts/psw/) | Canonical PowerShell deployment, tests, rollout and operations scripts |
+| [scripts/bash/](scripts/bash/) | Native Bash equivalents with no PowerShell runtime dependency |
+| [scripts/shared/](scripts/shared/) | Python implementation shared by both shell entry points |
+| [tests/psw/](tests/psw/) | Pester suites discovered by the PowerShell local runner |
+| [tests/bash/](tests/bash/) | POSIX Bash behavior harness, implemented with Python unittest |
+| [tests/shared/](tests/shared/) | Shared runtime and folder-layout regression suites |
+| [.gitattributes](.gitattributes) | Enforces LF line endings for Bash scripts |
 | [infra/main.bicep](infra/main.bicep) | APIM creation, Container Apps environment/backend, logging, API module |
 | [infra/gateway.bicep](infra/gateway.bicep) | Gateway app, secure secret reference, probes, scaling, revision |
 | [infra/modules/api.bicep](infra/modules/api.bicep) | API import, policy, gateway resource, API assignment |
@@ -870,17 +1091,20 @@ that APIM service; clean up only those project-owned entities separately if need
 | [api/policies/sample.xml](api/policies/sample.xml) | Gateway identity response header |
 | [api/policies/readiness.xml](api/policies/readiness.xml) | Configuration-only readiness operation |
 | [gateway/readiness.py](gateway/readiness.py) | Sidecar translating exact gateway markers into probe status |
-| [scripts/Test-Local.ps1](scripts/Test-Local.ps1) | Local validation/test entry point |
-| [scripts/Test-Gateway.ps1](scripts/Test-Gateway.ps1) | Live API smoke test |
-| [scripts/Test-Load.ps1](scripts/Test-Load.ps1) | Bounded load-test entry point and gates |
-| [scripts/load_test.py](scripts/load_test.py) | Paced standard-library load engine and JSON report |
-| [scripts/Rollout.ps1](scripts/Rollout.ps1) | Candidate promotion, traffic restoration, revision retention |
-| [scripts/Rollback-Gateway.ps1](scripts/Rollback-Gateway.ps1) | Confirmed rollback to a verified revision |
-| [scripts/Test-Restart.ps1](scripts/Test-Restart.ps1) | Confirmed restart/recovery rehearsal |
-| [scripts/Common.ps1](scripts/Common.ps1) | Shared validation, CLI, secret-file, and polling helpers |
-| [tests/Project.Tests.ps1](tests/Project.Tests.ps1) | Pester regression suite |
-| [tests/Rollout.Tests.ps1](tests/Rollout.Tests.ps1) | Promotion and rollback regression tests |
-| [tests/test_runtime.py](tests/test_runtime.py) | Readiness and load-engine unit/integration tests |
+| [scripts/psw/Test-Local.ps1](scripts/psw/Test-Local.ps1) | PowerShell local validation/test entry point |
+| [scripts/psw/Test-Gateway.ps1](scripts/psw/Test-Gateway.ps1) | Live API smoke test |
+| [scripts/psw/Test-Load.ps1](scripts/psw/Test-Load.ps1) | Bounded load-test entry point and gates |
+| [scripts/shared/load_test.py](scripts/shared/load_test.py) | Shared paced standard-library load engine and JSON report |
+| [scripts/psw/Rollout.ps1](scripts/psw/Rollout.ps1) | Candidate promotion, traffic restoration, revision retention |
+| [scripts/psw/Rollback-Gateway.ps1](scripts/psw/Rollback-Gateway.ps1) | Confirmed rollback to a verified revision |
+| [scripts/psw/Test-Restart.ps1](scripts/psw/Test-Restart.ps1) | Confirmed restart/recovery rehearsal |
+| [scripts/psw/Common.ps1](scripts/psw/Common.ps1) | Shared PowerShell validation, CLI, secret-file, and polling helpers |
+| [scripts/bash/common.sh](scripts/bash/common.sh) | Shared Bash options, HTTP verification and revision operations |
+| [scripts/bash/rollout.sh](scripts/bash/rollout.sh) | Bash candidate promotion, restoration and retention helpers |
+| [tests/psw/Project.Tests.ps1](tests/psw/Project.Tests.ps1) | Pester regression suite |
+| [tests/psw/Rollout.Tests.ps1](tests/psw/Rollout.Tests.ps1) | Promotion and rollback regression tests |
+| [tests/shared/test_runtime.py](tests/shared/test_runtime.py) | Shared readiness, load-engine and folder-layout tests |
+| [tests/bash/test_bash.py](tests/bash/test_bash.py) | POSIX-only native Bash behavior tests with mocked Azure/HTTP commands |
 | [.github/workflows/](.github/workflows/) | CI and OIDC deployment/rotation workflows |
 
 ## License

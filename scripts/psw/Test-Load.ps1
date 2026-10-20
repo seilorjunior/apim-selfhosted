@@ -15,10 +15,10 @@ if ($GatewayUrl.Scheme -ne 'https' -or $GatewayUrl.UserInfo -or $GatewayUrl.Quer
     throw 'GatewayUrl must be an HTTPS origin without a path, credentials, query, or fragment.'
 }
 if (!$OutputPath) {
-    $OutputPath = Join-Path (Split-Path $PSScriptRoot -Parent) "TestResults\load-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))-$([guid]::NewGuid().ToString('N').Substring(0,6)).json"
+    $OutputPath = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "TestResults\load-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))-$([guid]::NewGuid().ToString('N').Substring(0,6)).json"
 }
 Get-Command python -ErrorAction Stop | Out-Null
-& python (Join-Path $PSScriptRoot 'load_test.py') --url $GatewayUrl.AbsoluteUri `
+& python (Join-Path (Split-Path $PSScriptRoot -Parent) 'shared\load_test.py') --url $GatewayUrl.AbsoluteUri `
     --gateway-id $ExpectedGatewayId --rate $RequestsPerSecond --duration $DurationSeconds `
     --concurrency $MaxConcurrency --max-p95-ms $MaxP95Milliseconds `
     --max-error-rate $MaxErrorRate --output $OutputPath

@@ -26,4 +26,23 @@ jobs:
           catch [System.IO.FileNotFoundException] { Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force }
       - name: Compile and run local regression tests
         shell: pwsh
-        run: .\scripts\Test-Local.ps1
+        run: .\scripts\psw\Test-Local.ps1
+  validate-bash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Ensure native validation tools are available
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tool in python3 jq curl; do command -v "$tool"; done
+          if ! command -v bicep >/dev/null 2>&1; then
+            az bicep install
+            echo "$HOME/.azure/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Compile and test native Bash commands
+        shell: bash
+        run: bash scripts/bash/test-local.sh

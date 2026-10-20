@@ -1,8 +1,8 @@
 param([string] $BuildDirectory)
 
 BeforeAll {
-    $root = Split-Path $PSScriptRoot -Parent
-    . (Join-Path $root 'scripts\Common.ps1')
+    $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    . (Join-Path $root 'scripts\psw\Common.ps1')
     $main = Get-Content -LiteralPath (Join-Path $BuildDirectory 'main.json') -Raw | ConvertFrom-Json -AsHashtable
     $gateway = Get-Content -LiteralPath (Join-Path $BuildDirectory 'gateway.json') -Raw | ConvertFrom-Json -AsHashtable
 }
@@ -28,7 +28,7 @@ Describe 'Reusable infrastructure contract' {
         $readiness.properties.path | Should -Be 'gateway-health'
         $readiness.properties.path | Should -Match '^[a-zA-Z0-9][a-zA-Z0-9-]*$'
         Get-Content -LiteralPath (Join-Path $root 'gateway\readiness.py') -Raw | Should -Match '/gateway-health/ready'
-        Get-Content -LiteralPath (Join-Path $root 'scripts\Common.ps1') -Raw | Should -Match '/gateway-health/ready'
+        Get-Content -LiteralPath (Join-Path $root 'scripts\psw\Common.ps1') -Raw | Should -Match '/gateway-health/ready'
     }
     It 'supports existing APIM without redeclaring its service' {
         $apim = $main.resources | Where-Object type -EQ 'Microsoft.ApiManagement/service'
@@ -197,7 +197,7 @@ Describe 'Input and credential handling' {
         }
         AfterEach { Remove-Variable -Name ShgwTestState -Scope Global }
         It 'validates, deploys, waits for the new revision, smoke-tests, and cleans sensitive files' {
-            & (Join-Path $root 'deploy.ps1') -PublisherEmail 'test@example.com' -SubscriptionId test -ResourceGroup test
+            & (Join-Path $root 'scripts\psw\deploy.ps1') -PublisherEmail 'test@example.com' -SubscriptionId test -ResourceGroup test
             @($global:ShgwTestState.commands | Where-Object { $_ -like 'deployment group validate*' }).Count | Should -Be 2
             @($global:ShgwTestState.commands | Where-Object { $_ -like 'deployment group what-if*' }).Count | Should -Be 1
             @($global:ShgwTestState.commands | Where-Object { $_ -like 'deployment group create*' }).Count | Should -Be 2
@@ -205,13 +205,13 @@ Describe 'Input and credential handling' {
             Should -Invoke Invoke-WebRequest -Times 4 -Exactly
         }
         It 'performs read-only validation without tokens or deployments' {
-            & (Join-Path $root 'deploy.ps1') -PublisherEmail 'test@example.com' -SubscriptionId test -ResourceGroup test -ValidateOnly
+            & (Join-Path $root 'scripts\psw\deploy.ps1') -PublisherEmail 'test@example.com' -SubscriptionId test -ResourceGroup test -ValidateOnly
             @($global:ShgwTestState.commands | Where-Object { $_ -match 'generateToken|deployment group create|group create' }).Count | Should -Be 0
             Should -Invoke Invoke-WebRequest -Times 0 -Exactly
         }
         It 'rotates twice without redeploying infrastructure and always uses a distinct revision' {
             1..2 | ForEach-Object {
-                & (Join-Path $root 'deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly
+                & (Join-Path $root 'scripts\psw\deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly
             }
             @($global:ShgwTestState.commands | Where-Object { $_ -like 'deployment group create*' -and $_ -match 'shgw-infra' }).Count | Should -Be 0
             @($global:ShgwTestState.revisionSuffixes | Select-Object -Unique).Count | Should -Be 2
@@ -219,37 +219,37 @@ Describe 'Input and credential handling' {
         }
         It 'rejects an empty token before attempting a gateway rollout' {
             $global:ShgwTestState.emptyToken = $true
-            { & (Join-Path $root 'deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly } | Should -Throw '*empty gateway token*'
+            { & (Join-Path $root 'scripts\psw\deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly } | Should -Throw '*empty gateway token*'
             @($global:ShgwTestState.commands | Where-Object { $_ -like 'deployment group create*' }).Count | Should -Be 0
             $global:ShgwTestState.parameterPaths | ForEach-Object { Test-Path -LiteralPath $_ | Should -BeFalse }
         }
         It 'does not duplicate the authorization scheme if a token is already prefixed' {
             $global:ShgwTestState.prefixedToken = $true
-            & (Join-Path $root 'deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly
+            & (Join-Path $root 'scripts\psw\deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly
             $global:ShgwTestState.revisionSuffixes.Count | Should -Be 1
         }
         It 'rejects an unregistered provider rather than registering it silently' {
             $global:ShgwTestState.providerState = 'NotRegistered'
-            { & (Join-Path $root 'deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly } | Should -Throw '*not registered*'
+            { & (Join-Path $root 'scripts\psw\deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly } | Should -Throw '*not registered*'
             @($global:ShgwTestState.commands | Where-Object { $_ -match 'provider register|deployment group create' }).Count | Should -Be 0
         }
         It 'checks the actual existing APIM SKU' {
             $global:ShgwTestState.existingSku = 'StandardV2'
-            { & (Join-Path $root 'deploy.ps1') -SubscriptionId test -ResourceGroup test -ExistingApimName existing } | Should -Throw '*classic Developer or Premium*'
+            { & (Join-Path $root 'scripts\psw\deploy.ps1') -SubscriptionId test -ResourceGroup test -ExistingApimName existing } | Should -Throw '*classic Developer or Premium*'
         }
         It 'rejects a validity period beyond the gateway token maximum' {
-            { & (Join-Path $root 'deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly -TokenDays 31 } | Should -Throw
+            { & (Join-Path $root 'scripts\psw\deploy.ps1') -SubscriptionId test -ResourceGroup test -RotateTokenOnly -TokenDays 31 } | Should -Throw
             $global:ShgwTestState.commands.Count | Should -Be 0
         }
         It 'rehearses a restart and verifies the data plane before and after' {
             $global:ShgwTestState.revision = 'ca-apim-gateway--test'
-            & (Join-Path $root 'scripts\Test-Restart.ps1') -SubscriptionId test -ResourceGroup test -GatewayUrl 'https://gateway.example' -Confirm:$false
+            & (Join-Path $root 'scripts\psw\Test-Restart.ps1') -SubscriptionId test -ResourceGroup test -GatewayUrl 'https://gateway.example' -Confirm:$false
             @($global:ShgwTestState.commands | Where-Object { $_ -match '/restart\?' }).Count | Should -Be 1
             Should -Invoke Invoke-WebRequest -Times 2 -Exactly
         }
         It 'does not restart the revision in WhatIf mode' {
             $global:ShgwTestState.revision = 'ca-apim-gateway--test'
-            & (Join-Path $root 'scripts\Test-Restart.ps1') -SubscriptionId test -ResourceGroup test -GatewayUrl 'https://gateway.example' -WhatIf
+            & (Join-Path $root 'scripts\psw\Test-Restart.ps1') -SubscriptionId test -ResourceGroup test -GatewayUrl 'https://gateway.example' -WhatIf
             @($global:ShgwTestState.commands | Where-Object { $_ -match '/restart\?' }).Count | Should -Be 0
             Should -Invoke Invoke-WebRequest -Times 1 -Exactly
         }
