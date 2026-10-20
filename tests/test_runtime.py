@@ -157,17 +157,34 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(report["startedRequests"] + report["droppedRequests"], 5)
         self.assertFalse(report["passed"])
 
-    def test_scheduler_never_bursts_past_target_spacing(self):
+    def test_scheduler_drops_expired_slots_instead_of_catching_up(self):
+        clock = [0.0]
         launches = []
 
+        def sleep(seconds):
+            clock[0] = max(0.24, clock[0] + seconds)
+
         def request(url, gateway):
-            launches.append(time.monotonic())
+            launches.append(clock[0])
             return {"ok": True, "latencyMs": 1, "failure": None}
 
-        report = load.run_load("https://example/sample/", "gateway", rate=10,
-                               duration=0.3, concurrency=2, requester=request)
+        def submit(requester, url, gateway):
+            future = Future()
+            future.set_result(requester(url, gateway))
+            return future
+
+        with patch.object(load.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(load.time, "sleep", side_effect=sleep), \
+                patch.object(load, "ThreadPoolExecutor") as executor:
+            executor.return_value.__enter__.return_value.submit.side_effect = submit
+            report = load.run_load("https://example/sample/", "gateway", rate=10,
+                                   duration=0.5, concurrency=2, requester=request)
         self.assertEqual(report["startedRequests"], 3)
-        self.assertTrue(all(b - a >= 0.095 for a, b in zip(launches, launches[1:])))
+        self.assertEqual(report["droppedByReason"]["scheduleLate"], 2)
+        self.assertEqual(report["droppedRequests"], 2)
+        for actual, expected in zip(launches, (0.24, 0.3, 0.4)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertFalse(report["passed"])
 
     def test_request_rejects_empty_body(self):
         class Opener:
