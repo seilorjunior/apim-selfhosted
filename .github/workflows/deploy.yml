@@ -66,7 +66,7 @@ jobs:
           catch [System.IO.FileNotFoundException] { Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force }
       - name: Local validation
         shell: pwsh
-        run: .\scripts\Test-Local.ps1
+        run: .\scripts\psw\Test-Local.ps1
       - name: Validate, deploy, or rotate
         shell: pwsh
         run: |
@@ -83,7 +83,7 @@ jobs:
           if ($env:OPERATION -eq 'validate') { $arguments.ValidateOnly = $true }
           if ($env:OPERATION -eq 'rotate') { $arguments.RotateTokenOnly = $true }
           if ($env:RUN_LOAD_TEST -eq 'true') { $arguments.RunLoadTest = $true }
-          .\deploy.ps1 @arguments
+          .\scripts\psw\deploy.ps1 @arguments
       - name: Upload bounded load-test reports
         if: always()
         uses: actions/upload-artifact@v4

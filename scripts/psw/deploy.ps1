@@ -20,13 +20,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-. (Join-Path $PSScriptRoot 'scripts\Rollout.ps1')
+$root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+. (Join-Path $PSScriptRoot 'Rollout.ps1')
 
 if ($ValidateOnly -and $RotateTokenOnly) { throw 'Choose ValidateOnly or RotateTokenOnly, not both.' }
 if (!$ResourceGroup) {
     $ResourceGroup = if ($Environment -eq 'prod') { 'rg-apim-selfhosted-prod' } else { 'rg-apim-selfhosted' }
 }
-if (!$ParametersFile) { $ParametersFile = Join-Path $PSScriptRoot "infra\parameters\$Environment.parameters.json" }
+if (!$ParametersFile) { $ParametersFile = Join-Path $root "infra\parameters\$Environment.parameters.json" }
 $parameters = (Get-Content -LiteralPath $ParametersFile -Raw | ConvertFrom-Json -AsHashtable).parameters
 foreach ($entry in @{
     publisherEmail = $PublisherEmail; publisherName = $PublisherName; apimSku = $ApimSku
@@ -39,8 +40,8 @@ Assert-ProjectParameters -Parameters $parameters -Environment $Environment -Reso
 
 Get-Command az -ErrorAction Stop | Out-Null
 Get-Command bicep -ErrorAction Stop | Out-Null
-$template = Join-Path $PSScriptRoot 'infra\main.bicep'
-$gatewayTemplate = Join-Path $PSScriptRoot 'infra\gateway.bicep'
+$template = Join-Path $root 'infra\main.bicep'
+$gatewayTemplate = Join-Path $root 'infra\gateway.bicep'
 $accountArgs = @('account', 'show', '-o', 'json')
 if ($SubscriptionId) { $accountArgs += @('--subscription', $SubscriptionId) }
 $account = Invoke-Az -Arguments $accountArgs | ConvertFrom-Json
@@ -100,7 +101,7 @@ try {
     $state = if ($existingAppId) { Get-GatewayState -AppId $appId -SubscriptionId $SubscriptionId } else { $null }
     $previousRevision = Get-StableGatewayRevision -State $state
     if ($previousRevision) {
-        & (Join-Path $PSScriptRoot 'scripts\Test-Gateway.ps1') `
+        & (Join-Path $PSScriptRoot 'Test-Gateway.ps1') `
             -GatewayUrl "https://$($state.properties.configuration.ingress.fqdn)" `
             -ExpectedGatewayId $outputs.gatewayName.value -TimeoutSeconds $TimeoutSeconds
         Write-Host "Keeping $previousRevision at 100% public traffic while the candidate is verified."

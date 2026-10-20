@@ -1,0 +1,82 @@
+name: Disposable Azure integration
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type CREATE DISPOSABLE RESOURCES to acknowledge Azure charges and cleanup
+        type: string
+        required: true
+      location:
+        description: Azure region for the disposable environment
+        type: string
+        default: eastus2
+permissions:
+  contents: read
+concurrency:
+  group: disposable-azure-integration
+  cancel-in-progress: false
+jobs:
+  integration:
+    if: inputs.confirmation == 'CREATE DISPOSABLE RESOURCES'
+    runs-on: windows-latest
+    timeout-minutes: 240
+    environment: integration
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      PUBLISHER_EMAIL: ${{ vars.APIM_PUBLISHER_EMAIL }}
+      LOCATION: ${{ inputs.location }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate configuration and allocate run identity
+        id: run
+        shell: pwsh
+        run: |
+          if (!$env:AZURE_SUBSCRIPTION_ID -or !$env:PUBLISHER_EMAIL) {
+            throw 'Configure integration environment variables before running live tests.'
+          }
+          "id=$([guid]::NewGuid().ToString('N'))" >> $env:GITHUB_OUTPUT
+      - uses: azure/login@v2
+        id: login
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Ensure Bicep is available
+        shell: pwsh
+        run: |
+          az bicep version
+          if ($LASTEXITCODE -ne 0) {
+            az bicep install
+            if ($LASTEXITCODE -ne 0) { throw 'Bicep installation failed.' }
+          }
+          Join-Path $HOME '.azure\bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Run isolated live scenarios
+        shell: pwsh
+        env:
+          INTEGRATION_RUN_ID: ${{ steps.run.outputs.id }}
+        run: |
+          .\scripts\psw\Test-Integration.ps1 -SubscriptionId $env:AZURE_SUBSCRIPTION_ID `
+            -PublisherEmail $env:PUBLISHER_EMAIL -Location $env:LOCATION `
+            -RunId $env:INTEGRATION_RUN_ID -AllowProvisioning
+      - name: Retry ownership-checked cleanup
+        if: always() && steps.login.outcome == 'success' && steps.run.outputs.id != ''
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          INTEGRATION_RUN_ID: ${{ steps.run.outputs.id }}
+        run: |
+          .\scripts\psw\Test-Integration.ps1 -SubscriptionId $env:AZURE_SUBSCRIPTION_ID `
+            -RunId $env:INTEGRATION_RUN_ID -AllowProvisioning -CleanupOnly
+      - name: Upload integration summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: TestResults/integration-*.json
+          if-no-files-found: ignore
