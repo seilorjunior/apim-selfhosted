@@ -1,0 +1,29 @@
+name: Validate project
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Ensure validation tools are available
+        shell: pwsh
+        run: |
+          az bicep version
+          if ($LASTEXITCODE -ne 0) {
+            az bicep install
+            if ($LASTEXITCODE -ne 0) { throw 'Bicep installation failed' }
+          }
+          Join-Path $HOME '.azure\bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          try { Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop }
+          catch [System.IO.FileNotFoundException] { Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force }
+      - name: Compile and run local regression tests
+        shell: pwsh
+        run: .\scripts\Test-Local.ps1

@@ -1,0 +1,93 @@
+name: Deploy or rotate gateway
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, prod]
+        default: dev
+      operation:
+        description: Deploy infrastructure and gateway, validate only, or rotate token
+        type: choice
+        options: [validate, deploy, rotate]
+        default: validate
+      load_test:
+        description: Run capped 10 RPS / 60 second candidate test before promotion
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 6 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: apim-${{ inputs.environment || vars.SCHEDULED_ROTATION_ENVIRONMENT || 'dev' }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # Scheduled rotation is opt-in, and never creates infrastructure.
+    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_SCHEDULED_ROTATION == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    environment: ${{ inputs.environment || vars.SCHEDULED_ROTATION_ENVIRONMENT || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.environment || vars.SCHEDULED_ROTATION_ENVIRONMENT || 'dev' }}
+      OPERATION: ${{ inputs.operation || 'rotate' }}
+      RUN_LOAD_TEST: ${{ inputs.load_test || false }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      LOCATION: ${{ vars.AZURE_LOCATION || 'eastus2' }}
+      PUBLISHER_EMAIL: ${{ vars.APIM_PUBLISHER_EMAIL }}
+      EXISTING_APIM_NAME: ${{ vars.EXISTING_APIM_NAME }}
+      APIM_RESOURCE_GROUP: ${{ vars.APIM_RESOURCE_GROUP }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Ensure validation tools are available
+        shell: pwsh
+        run: |
+          az bicep version
+          if ($LASTEXITCODE -ne 0) {
+            az bicep install
+            if ($LASTEXITCODE -ne 0) { throw 'Bicep installation failed' }
+          }
+          Join-Path $HOME '.azure\bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          try { Import-Module Pester -MinimumVersion 5.0 -ErrorAction Stop }
+          catch [System.IO.FileNotFoundException] { Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force }
+      - name: Local validation
+        shell: pwsh
+        run: .\scripts\Test-Local.ps1
+      - name: Validate, deploy, or rotate
+        shell: pwsh
+        run: |
+          if (!$env:AZURE_SUBSCRIPTION_ID -or !$env:RESOURCE_GROUP) { throw 'Configure subscription and resource group environment variables.' }
+          $arguments = @{
+            Environment = $env:TARGET_ENVIRONMENT
+            SubscriptionId = $env:AZURE_SUBSCRIPTION_ID
+            ResourceGroup = $env:RESOURCE_GROUP
+            Location = $env:LOCATION
+          }
+          if ($env:PUBLISHER_EMAIL) { $arguments.PublisherEmail = $env:PUBLISHER_EMAIL }
+          if ($env:EXISTING_APIM_NAME) { $arguments.ExistingApimName = $env:EXISTING_APIM_NAME }
+          if ($env:APIM_RESOURCE_GROUP) { $arguments.ApimResourceGroup = $env:APIM_RESOURCE_GROUP }
+          if ($env:OPERATION -eq 'validate') { $arguments.ValidateOnly = $true }
+          if ($env:OPERATION -eq 'rotate') { $arguments.RotateTokenOnly = $true }
+          if ($env:RUN_LOAD_TEST -eq 'true') { $arguments.RunLoadTest = $true }
+          .\deploy.ps1 @arguments
+      - name: Upload bounded load-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-load-${{ inputs.environment || vars.SCHEDULED_ROTATION_ENVIRONMENT || 'dev' }}
+          path: TestResults/load-*.json
+          if-no-files-found: ignore

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "prod" },
+    "baseName": { "value": "shgw-prod" },
+    "apimSku": { "value": "Premium" },
+    "gatewayName": { "value": "aca-gateway-prod" },
+    "gatewayAppName": { "value": "ca-apim-gateway-prod" },
+    "backendAppName": { "value": "ca-backend-prod" },
+    "gatewayMinReplicas": { "value": 2 },
+    "gatewayMaxReplicas": { "value": 6 },
+    "gatewayConcurrentRequests": { "value": 50 },
+    "tags": { "value": { "workload": "gateway" } }
+  }
+}

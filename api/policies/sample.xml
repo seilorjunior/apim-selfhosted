@@ -1,0 +1,11 @@
+<policies>
+  <inbound><base /></inbound>
+  <backend><base /></backend>
+  <outbound>
+    <base />
+    <set-header name="X-Served-By" exists-action="override">
+      <value>@(context.Deployment.Gateway.Id)</value>
+    </set-header>
+  </outbound>
+  <on-error><base /></on-error>
+</policies>

@@ -1,0 +1,8 @@
+# Generated templates and local credentials/parameters.
+infra/main.json
+infra/gateway.json
+*.local.parameters.json
+.env
+TestResults/
+__pycache__/
+*.pyc

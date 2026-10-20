@@ -1,0 +1,22 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Self-hosted gateway sample",
+    "version": "1.0.0",
+    "description": "Routes to the internal Container Apps sample backend."
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "get-root",
+        "summary": "Get the sample backend page",
+        "responses": {
+          "200": {
+            "description": "Sample backend HTML",
+            "content": { "text/html": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    }
+  }
+}
