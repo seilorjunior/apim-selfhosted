@@ -376,6 +376,21 @@ not automatically create an APIM API version set. The diagnostic header uses
 
 ## Testing and verified results
 
+### Choose a test scope
+
+Run commands from the repository root in PowerShell 7.2+. Use the
+[prerequisites](#1-check-prerequisites) for Python, Pester, and Bicep.
+
+| Scope | Requirements | Effect |
+|---|---|---|
+| Local regression suite | Local tools; no Azure sign-in | Builds templates and runs mocked deployment and runtime tests |
+| Live readiness and smoke checks | An existing gateway; network access to its HTTPS origin | Sends a few requests; no deployment or restart |
+| Bounded load test | Permission to test the target environment | Sends up to 600 requests; can generate Azure usage/logging charges |
+| Candidate load gate | Azure deployment permissions and settings | Deploys a candidate and conditionally promotes it; see [safe rollout](#safe-rollout-and-rollback) |
+
+Run local tests first, then live functional checks, then the load test. Restart
+and outage rehearsals are separate operations and are not part of this sequence.
+
 ### Local regression tests
 
 ```powershell
@@ -393,26 +408,95 @@ promotion ordering, traffic restoration, and rollback safeguards.
 Azure dependencies are mocked; no Azure sign-in or resource
 changes are needed, although the CLI tools must be installed.
 
+Success prints Python `OK` and a Pester summary with zero failures. The current
+suite contains 13 Python tests and 52 Pester tests. Any build, parse, or test
+failure stops the script with an error.
+
 ### Live smoke and negative-route checks
 
-```powershell
-.\scripts\Test-Gateway.ps1 -GatewayUrl $gatewayUrl `
-    -ExpectedGatewayId 'aca-gateway' -TimeoutSeconds 60
+Set the origin for your deployment. Do not include `/sample/` in `$gatewayUrl`.
+If the quick-start variables are already set, retrieve the address with:
 
+```powershell
+$appName = 'ca-apim-gateway'
+$expectedGatewayId = 'aca-gateway'
+$fqdn = az containerapp show --name $appName `
+    --resource-group $resourceGroup --subscription $subscriptionId `
+    --query properties.configuration.ingress.fqdn --output tsv
+if ($LASTEXITCODE -ne 0 -or !$fqdn) { throw 'Cannot resolve the gateway origin.' }
+$gatewayUrl = "https://$fqdn"
+```
+
+Alternatively, set `$gatewayUrl` directly to your deployed HTTPS origin. Azure
+CLI sign-in is needed for address discovery, not for public HTTP checks. For prod,
+set `$appName = 'ca-apim-gateway-prod'` and
+`$expectedGatewayId = 'aca-gateway-prod'`.
+
+Verify loaded configuration and backend routing:
+
+```powershell
+. .\scripts\Common.ps1
+Wait-GatewayConfiguration -GatewayUrl $gatewayUrl `
+    -ExpectedGatewayId $expectedGatewayId -TimeoutSeconds 60
+
+.\scripts\Test-Gateway.ps1 -GatewayUrl $gatewayUrl `
+    -ExpectedGatewayId $expectedGatewayId -TimeoutSeconds 60
+
+$sample = Invoke-WebRequest -Uri "$gatewayUrl/sample/" -TimeoutSec 15
+if ($sample.StatusCode -ne 200 -or
+    [string]$sample.Headers['X-Served-By'] -cne $expectedGatewayId -or
+    $sample.RawContentLength -le 0) {
+    throw 'Sample response status, gateway identity, or body is invalid.'
+}
+```
+
+Inspect negative routes:
+
+```powershell
 curl.exe -i "$gatewayUrl/not-found"
 curl.exe -i -X POST "$gatewayUrl/sample/"
 ```
 
-For prod, use `-ExpectedGatewayId aca-gateway-prod`. Unknown routes and the
-unconfigured POST operation return HTTP 404. HTTP requests redirect to HTTPS.
+Both responses must be HTTP 404. `curl.exe` displays those responses but does
+not fail automatically for HTTP error status codes. To assert them in a script:
+
+```powershell
+foreach ($test in @(
+    @{ Path = '/not-found'; Method = 'GET' },
+    @{ Path = '/sample/'; Method = 'POST' }
+)) {
+    $response = Invoke-WebRequest -Uri "$gatewayUrl$($test.Path)" `
+        -Method $test.Method -TimeoutSec 15 -SkipHttpErrorCheck
+    if ($response.StatusCode -ne 404) {
+        throw "Expected HTTP 404 for $($test.Method) $($test.Path); got $($response.StatusCode)."
+    }
+}
+```
+
+| Check | Expected response |
+|---|---|
+| `GET /gateway-health/ready` | HTTP 200, `X-Gateway-Ready: configured`, expected `X-Served-By`, exact body `ready` |
+| `GET /sample/` | HTTP 200, expected `X-Served-By`, nonempty backend body |
+| `GET /not-found` | HTTP 404 |
+| `POST /sample/` | HTTP 404 because the operation is not configured |
+
+Readiness and smoke helpers retry for up to the supplied timeout and throw if
+their checks never pass. An empty HTTP 200 is not proof of a configured gateway.
+HTTP requests to public ingress redirect to HTTPS.
 
 ### Bounded load test
 
 Run against an environment you own and have permission to test:
 
 ```powershell
+# Short preliminary run: at most 100 scheduled requests.
 .\scripts\Test-Load.ps1 -GatewayUrl $gatewayUrl `
-    -ExpectedGatewayId 'aca-gateway' `
+    -ExpectedGatewayId $expectedGatewayId `
+    -RequestsPerSecond 10 -DurationSeconds 10 -MaxConcurrency 10
+
+# Full bounded run: at most 600 scheduled requests.
+.\scripts\Test-Load.ps1 -GatewayUrl $gatewayUrl `
+    -ExpectedGatewayId $expectedGatewayId `
     -RequestsPerSecond 10 -DurationSeconds 60 -MaxConcurrency 10
 ```
 
@@ -434,6 +518,61 @@ JSON reports default to ignored `TestResults/load-<timestamp>-<id>.json` and
 include request counts, drops by reason, p95/p99/max latency, error rate, observed concurrency,
 throughput, thresholds, and pass/fail. Latency includes client/network overhead;
 this small test is **not a production capacity or autoscaling certification**.
+
+### Read a load report and investigate failures
+
+The command prints the report path, including when a threshold fails. Read that
+specific report; do not substitute an older successful run. To inspect the latest
+local report:
+
+```powershell
+$latestReport = Get-ChildItem -LiteralPath .\TestResults -Filter 'load-*.json' |
+    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+if (!$latestReport) { throw 'No load report found.' }
+$report = Get-Content -LiteralPath $latestReport.FullName -Raw | ConvertFrom-Json
+$report | Select-Object passed, plannedRequests, startedRequests, `
+    successfulRequests, failedRequests, droppedRequests, errorRate, `
+    p95Ms, p99Ms, maxLatencyMs, maxObservedConcurrency
+$report.droppedByReason
+$report.failureExamples
+```
+
+| Report field or failure | Meaning and next check |
+|---|---|
+| `failedRequests` | Requests started but failed validation or transport; inspect `failureExamples`, readiness, and gateway/backend logs |
+| `droppedByReason.concurrencyLimit` | A scheduled slot found all allowed requests in flight; inspect latency, client networking, and gateway/backend metrics |
+| `droppedByReason.scheduleLate` | The client missed a scheduling slot; inspect client CPU load, scheduling delays, and competing tests |
+| `droppedByReason.durationElapsed` | The client reached the end of the request-launch window before submitting a slot |
+| `errorRate` | `(failedRequests + droppedRequests) / plannedRequests`; `0.01` means 1% |
+| High `p95Ms` | Investigate client/network overhead and gateway/backend response latency |
+| `passed: false` with zero failed requests | Drops or latency can still fail the overall gate; successful HTTP responses alone do not establish a pass |
+
+The maximum duration bounds request scheduling; outstanding requests can finish
+after that window. `maxObservedConcurrency` includes pending submitted work.
+One run cannot establish whether saturation originates in the client, network,
+gateway, or backend. Keep failed reports, investigate the cause, and record any
+rerun separately. Do not silently relax thresholds or raise the hard load caps
+to turn a failed run into a pass.
+
+On GitHub, the [CI workflow](.github/workflows/ci.yml) runs the local suite only.
+The [deployment workflow](.github/workflows/deploy.yml) can run the candidate load
+gate with its manual `load_test` input and uploads generated reports. It requires
+the Azure/OIDC configuration described in [GitHub Actions](#github-actions).
+
+### Latest test snapshot: October 20, 2026
+
+| Check | Observed result |
+|---|---|
+| Local suite | 52 Pester and 13 Python tests passed; Bicep builds and PowerShell parsing passed |
+| Live functional checks | Configuration readiness and sample API passed; unknown route and unsupported POST returned 404 |
+| Full bounded load | 600 scheduled; 598 started and succeeded; zero failed requests |
+| Dropped slots | 2, both due to the concurrency limit |
+| Latency | p95 445.85 ms; p99 900.57 ms; maximum 1,107.65 ms |
+| Error rate including drops | 0.333%, within the 1% gate |
+| Overall load verdict | Failed because the zero-dropped-request gate was not met |
+
+This run did not restart, redeploy, or change traffic. It does not replace the
+earlier successful candidate load result below; each result describes its own run.
 
 ### Observed results: October 19, 2026
 
